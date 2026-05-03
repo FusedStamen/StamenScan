@@ -1,29 +1,42 @@
 #!/bin/bash
 # Title:       StamenScan
 # Author:      FusedStamen
-# Version:     1.1
+# Version:     2.0
 # Category:    Reconnaissance
 # Description: Passive surveillance infrastructure detection payload.
-#              Detects Flock Safety ALPR cameras (35 WiFi OUIs + 9 BLE OUIs),
-#              Axon body cameras/tasers, Axis/Verkada/Hikvision/Dahua cameras.
-#              Designed for wardriving — runs continuously, optionally logs GPS
-#              coordinates with each detection, and alerts on high-severity finds.
+#              Detects Flock Safety ALPR cameras, Axon body cameras,
+#              Axis/Verkada/Hikvision/Dahua cameras, and Raven/ShotSpotter
+#              gunshot detection nodes via simultaneous WiFi + BLE scanning.
+#
+# WiFi detection layers:
+#   - addr2 (transmitter) OUI match on all frames
+#   - addr1 (receiver) OUI match — catches sleeping cameras (NitekryDPaul)
+#   - Wildcard probe signature — probe-req + empty SSID + OUI (DeFlockJoplin)
+#   - SSID keyword match
+#
+# BLE detection layers:
+#   - OUI prefix match
+#   - Device name keyword match
+#   - Manufacturer ID 0x09C8 (XUNTONG/Flock) — Will Greenberg
+#   - Raven/ShotSpotter service UUID range 0x3100-0x3500 — GainSec
 #
 # OUI Research Credits:
-#   @NitekryDPaul — 30 Flock WiFi OUIs (promiscuous-mode research)
+#   @NitekryDPaul — 30 Flock WiFi OUIs + addr1 receiver technique
 #   Michael/DeFlockJoplin — 31st OUI + wildcard probe signature
-#   colonelpanichacks/flock-you — BLE OUI research
+#   colonelpanichacks/flock-you — BLE OUI + manufacturer ID research
+#   Will Greenberg — BLE manufacturer ID 0x09C8 (XUNTONG) detection
+#   GainSec — Raven/ShotSpotter BLE service UUID dataset
 #   WiGLE field data — additional verified OUIs
-#   judcrandall/lookout.py — Axon BLE detection
+#   judcrandall/lookout.py — Axon BLE OUIs
 #
 # Requirements: wlan0mon or wlan1mon for WiFi scanning
-#               hci0 for BLE scanning
-#               GPS optional — coordinates logged if available
+#               hci0 + btmon for BLE scanning
+#               GPS optional
 #
 # LED BEHAVIOR:
 #   SETUP    - Initializing
 #   SPECIAL  - Scanning active
-#   FINISH   - Detection (with ALERT+RINGTONE for HIGH severity)
+#   FINISH   - Detection (ALERT+RINGTONE for HIGH)
 #   FAIL     - Error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
@@ -31,39 +44,52 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 [ -z "$SCRIPT_DIR" ] && SCRIPT_DIR="/root/payloads/user/reconnaissance/StamenScan"
 OUI_FILE="$SCRIPT_DIR/stamenscan_oui.txt"
 [ ! -f "$OUI_FILE" ] && OUI_FILE="/root/payloads/user/reconnaissance/StamenScan/stamenscan_oui.txt"
+
 LOOT_DIR="/root/loot/stamenscan"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${LOOT_DIR}/stamenscan_${TIMESTAMP}.csv"
-SEEN_FILE="/tmp/stamenscan_seen.txt"
-SCAN_INTERVAL=15
-BLE_SCAN_TIME=10
-WIFI_PASSIVE_TIME=10
+SEEN_FILE="/tmp/ss_seen.txt"
+BTMON_FILE="/tmp/ss_btmon.txt"
+WIFI_FILE="/tmp/ss_wifi.txt"
+
+# Scan cycle duration in seconds
+SCAN_TIME=12
+
+# Raven service UUID prefixes (custom GainSec dataset)
+RAVEN_UUIDS="00003100 00003200 00003300 00003400 00003500"
 
 # ---- INIT ----
 
 LED SETUP
-
 mkdir -p "$LOOT_DIR"
 > "$SEEN_FILE"
 
-# Verify OUI file exists
 if [ ! -f "$OUI_FILE" ]; then
     LOG red "OUI database not found: $OUI_FILE"
-    LOG red "Place stamenscan_oui.txt alongside payload.sh"
     LED FAIL
     exit 1
 fi
 
+OUI_COUNT=$(grep -c "^[^#]" "$OUI_FILE" 2>/dev/null || echo 0)
+
+# GPS check
 GPS_AVAILABLE=0
 gps_test=$(GPS_GET 2>/dev/null)
 if [ -n "$gps_test" ] && [ "$gps_test" != "0 0 0 0" ]; then
     GPS_AVAILABLE=1
     LOG green "GPS: available"
 else
-    LOG yellow "GPS: not available — detections logged without coordinates"
+    LOG yellow "GPS: not available — logging 0,0"
 fi
 
-OUI_COUNT=$(grep -c "^[^#]" "$OUI_FILE" 2>/dev/null || echo 0)
+# Monitor interface check
+MON_IFACE=""
+for iface in wlan1mon wlan0mon; do
+    if ip link show "$iface" >/dev/null 2>&1; then
+        MON_IFACE="$iface"
+        break
+    fi
+done
 
 # Write CSV header
 echo "timestamp,gps_lat,gps_lon,mac,oui,category,severity,description,method,rssi" > "$LOG_FILE"
@@ -72,14 +98,15 @@ LOG ""
 LOG cyan "╔═══════════════════════════════╗"
 LOG cyan "║       S T A M E N S C A N     ║"
 LOG cyan "║  Surveillance Infrastructure  ║"
-LOG cyan "║        Detection v1.0         ║"
+LOG cyan "║        Detection v2.0         ║"
 LOG cyan "╚═══════════════════════════════╝"
 LOG ""
 LOG "OUI database: $OUI_COUNT entries"
+[ -n "$MON_IFACE" ] && LOG green "WiFi: $MON_IFACE" || LOG yellow "WiFi: no monitor interface"
 LOG "Loot: $LOG_FILE"
 LOG ""
 
-# ---- GPS HELPER ----
+# ---- HELPERS ----
 
 get_gps() {
     [ "$GPS_AVAILABLE" -eq 0 ] && echo "0,0" && return
@@ -92,7 +119,18 @@ get_gps() {
     fi
 }
 
-# ---- OUI LOOKUP ----
+is_laa() {
+    # Returns 0 (true) if MAC is locally administered/randomized
+    local first_octet
+    first_octet=$(echo "$1" | cut -d: -f1 | tr 'a-z' 'A-Z')
+    [ $(( 0x${first_octet} & 0x02 )) -ne 0 ]
+}
+
+is_multicast() {
+    local first_octet
+    first_octet=$(echo "$1" | cut -d: -f1 | tr 'a-z' 'A-Z')
+    [ $(( 0x${first_octet} & 0x01 )) -ne 0 ]
+}
 
 lookup_oui() {
     local mac_upper
@@ -102,11 +140,47 @@ lookup_oui() {
     grep "^${oui}|" "$OUI_FILE" 2>/dev/null | head -1
 }
 
-# ---- ALERT HANDLER ----
+# ---- ALERT + LOG ----
 
-fire_alert() {
-    local severity="$1" category="$2" mac="$3" desc="$4" method="$5"
+fire_detection() {
+    local mac="$1" category="$2" severity="$3" desc="$4" method="$5" rssi="${6:-0}"
 
+    # Dedup
+    local key="${mac}|${method}"
+    if grep -q "^${key}$" "$SEEN_FILE" 2>/dev/null; then
+        return
+    fi
+    echo "$key" >> "$SEEN_FILE"
+
+    local ts gps
+    ts=$(date '+%Y-%m-%dT%H:%M:%S')
+    gps=$(get_gps)
+    local oui
+    oui=$(echo "$mac" | tr 'a-z' 'A-Z' | cut -c1-8)
+
+    # Log to CSV
+    echo "${ts},${gps},${mac},${oui},${category},${severity},${desc},${method},${rssi}" >> "$LOG_FILE"
+
+    # Display
+    case "$category" in
+        FLOCK|FLOCK_BLE)
+            LOG red   "⚠ [${severity}] FLOCK: $mac — $desc ($method)"
+            ;;
+        FLOCK_MANUFACTURER)
+            LOG red   "⚠ [HIGH] FLOCK MFR ID: $mac — manufacturer 0x09C8 ($method)"
+            ;;
+        RAVEN)
+            LOG red   "⚠ [HIGH] RAVEN/SHOTSPOTTER: $mac — $desc ($method)"
+            ;;
+        AXON)
+            LOG yellow "⚠ [${severity}] AXON: $mac — $desc ($method)"
+            ;;
+        *)
+            LOG blue  "⚠ [${severity}] ${category}: $mac — $desc ($method)"
+            ;;
+    esac
+
+    # Alert
     case "$severity" in
         HIGH)
             LED FINISH
@@ -119,228 +193,268 @@ fire_alert() {
             sleep 1
             RINGTONE "alert"
             VIBRATE
+            LED SPECIAL
             ;;
         MEDIUM)
-            LED SPECIAL
+            LED FINISH
             VIBRATE
-            ;;
-        LOW)
-            # Log only, no alert
-            ;;
-    esac
-
-    case "$category" in
-        FLOCK|FLOCK_BATTERY)
-            LOG red    "⚠ [${severity}] FLOCK: $mac — $desc ($method)"
-            ;;
-        AXON)
-            LOG yellow "⚠ [${severity}] AXON: $mac — $desc ($method)"
-            ;;
-        AXIS|VERKADA|HIKVISION|DAHUA)
-            LOG blue   "⚠ [${severity}] ${category}: $mac — $desc ($method)"
-            ;;
-        FLOCK_LITEON|FLOCK_MODEM)
-            LOG cyan   "? [${severity}] POSSIBLE FLOCK: $mac — $desc ($method)"
-            ;;
-        *)
-            LOG        "? [${severity}] ${category}: $mac — $desc ($method)"
+            LED SPECIAL
             ;;
     esac
 }
 
-# ---- LOG DETECTION ----
+# ---- OUI MATCH ----
 
-log_detection() {
-    local mac="$1" oui="$2" category="$3" severity="$4" desc="$5" method="$6" rssi="${7:-0}"
-    local gps ts
-    ts=$(date '+%Y-%m-%dT%H:%M:%S')
-    gps=$(get_gps)
-    echo "${ts},${gps},${mac},${oui},${category},${severity},${desc},${method},${rssi}" >> "$LOG_FILE"
-}
-
-# ---- PROCESS MAC ----
-
-process_mac() {
-    local mac="$1" rssi="${2:-0}" method="$3"
+check_oui() {
+    local mac="$1" method="$2"
     [ -z "$mac" ] && return
-
-    # Skip LAA (locally administered) MACs — randomized, not useful
-    local first_octet
-    first_octet=$(echo "$mac" | cut -d: -f1 | tr 'a-z' 'A-Z')
-    local laa_check=$(( 0x${first_octet} & 0x02 ))
-    [ "$laa_check" -ne 0 ] && return
-
-    # Dedup — skip if seen recently
-    if grep -q "^${mac}$" "$SEEN_FILE" 2>/dev/null; then
-        return
-    fi
-    echo "$mac" >> "$SEEN_FILE"
+    # Validate MAC format
+    echo "$mac" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || return
+    # Skip LAA and multicast
+    is_laa "$mac" && return
+    is_multicast "$mac" && return
 
     local oui_line
     oui_line=$(lookup_oui "$mac")
     [ -z "$oui_line" ] && return
 
-    local oui category severity desc
-    oui=$(echo "$oui_line" | cut -d'|' -f1)
+    local category severity desc
     category=$(echo "$oui_line" | cut -d'|' -f2)
     severity=$(echo "$oui_line" | cut -d'|' -f3)
     desc=$(echo "$oui_line" | cut -d'|' -f4)
 
-    fire_alert "$severity" "$category" "$mac" "$desc" "$method"
-    log_detection "$mac" "$oui" "$category" "$severity" "$desc" "$method" "$rssi"
+    fire_detection "$mac" "$category" "$severity" "$desc" "$method"
 }
 
-# ---- ALSO CHECK SSID NAMES (Flock WiFi) ----
+# ---- SSID KEYWORD MATCH ----
 
-check_ssid_names() {
-    local ssid="$1" mac="$2"
+check_ssid() {
+    local ssid="$1" mac="$2" method="$3"
+    [ -z "$ssid" ] && return
     local ssid_lower
     ssid_lower=$(echo "$ssid" | tr 'A-Z' 'a-z')
 
     case "$ssid_lower" in
         *flock*|*penguin*|*pigvision*|*"fs ext battery"*)
-            # Skip if already seen by OUI
-            if grep -q "^${mac}$" "$SEEN_FILE" 2>/dev/null; then
-                return
-            fi
-            echo "$mac" >> "$SEEN_FILE"
+            local key="${mac}|SSID_FLOCK"
+            grep -q "^${key}$" "$SEEN_FILE" 2>/dev/null && return
+            echo "$key" >> "$SEEN_FILE"
             local ts gps
             ts=$(date '+%Y-%m-%dT%H:%M:%S')
             gps=$(get_gps)
-            LOG red "⚠ [HIGH] FLOCK (SSID): $mac — SSID: $ssid (WIFI)"
+            echo "${ts},${gps},${mac},SSID,FLOCK_SSID,HIGH,Flock SSID: ${ssid},${method},0" >> "$LOG_FILE"
+            LOG red "⚠ [HIGH] FLOCK SSID: $mac — $ssid ($method)"
             LED FINISH
+            ALERT "FLOCK SSID! $ssid"
             RINGTONE "alert"
             VIBRATE
-            ALERT "FLOCK SSID DETECTED! $ssid"
-            echo "${ts},${gps},${mac},SSID,FLOCK_SSID,HIGH,Flock SSID: ${ssid},WIFI,0" >> "$LOG_FILE"
+            sleep 1
+            RINGTONE "alert"
+            VIBRATE
+            sleep 1
+            RINGTONE "alert"
+            VIBRATE
+            LED SPECIAL
             ;;
-        *axon*|"axon-"*|"x"[0-9][0-9][0-9][0-9][0-9]*)
-            if grep -q "^${mac}$" "$SEEN_FILE" 2>/dev/null; then
-                return
-            fi
-            echo "$mac" >> "$SEEN_FILE"
+        *axon*)
+            local key="${mac}|SSID_AXON"
+            grep -q "^${key}$" "$SEEN_FILE" 2>/dev/null && return
+            echo "$key" >> "$SEEN_FILE"
             local ts gps
             ts=$(date '+%Y-%m-%dT%H:%M:%S')
             gps=$(get_gps)
-            LOG yellow "⚠ [HIGH] AXON (SSID): $mac — SSID: $ssid (WIFI)"
+            echo "${ts},${gps},${mac},SSID,AXON_SSID,HIGH,Axon SSID: ${ssid},${method},0" >> "$LOG_FILE"
+            LOG yellow "⚠ [HIGH] AXON SSID: $mac — $ssid ($method)"
             LED FINISH
+            ALERT "AXON SSID! $ssid"
             RINGTONE "alert"
             VIBRATE
-            ALERT "AXON SSID DETECTED! $ssid"
-            echo "${ts},${gps},${mac},SSID,AXON_SSID,HIGH,Axon SSID: ${ssid},WIFI,0" >> "$LOG_FILE"
+            LED SPECIAL
             ;;
     esac
 }
 
-# ---- BLE SCAN ----
+# ---- WIFI PARSER ----
+# Pre-filters then processes completed WIFI_FILE
 
-run_ble_scan() {
-    LOG cyan "BLE scan (${BLE_SCAN_TIME}s)..."
+parse_wifi() {
+    [ ! -s "$WIFI_FILE" ] && return
 
-    (echo "power on"; sleep 1; echo "scan on"; sleep "$BLE_SCAN_TIME"; echo "scan off") \
-        | bluetoothctl 2>/dev/null | grep "^\[NEW\] Device" \
-        | awk '{print $3}' > /tmp/ss_ble_macs.txt
-
-    bluetoothctl devices 2>/dev/null | awk '{print $2}' >> /tmp/ss_ble_macs.txt
-
-    if [ -s /tmp/ss_ble_macs.txt ]; then
-        sort -u /tmp/ss_ble_macs.txt | while IFS= read -r mac; do
-            echo "$mac" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || continue
-            process_mac "$mac" "0" "BLE"
-        done
-    fi
-
-    rm -f /tmp/ss_ble_macs.txt
-}
-
-# ---- WIFI PASSIVE SCAN ----
-
-run_wifi_scan() {
-    local mon_iface=""
-
-    # Find available monitor interface
-    for iface in wlan1mon wlan0mon; do
-        if ip link show "$iface" >/dev/null 2>&1; then
-            mon_iface="$iface"
-            break
-        fi
+    # Extract unique MACs from beacons/probes first for fast OUI check
+    grep -oP '(?<=SA:)([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' "$WIFI_FILE" | \
+        sort -u | while read -r mac; do
+        check_oui "$mac" "wifi_addr2"
     done
 
-    if [ -z "$mon_iface" ]; then
-        LOG yellow "No monitor interface — skipping WiFi scan"
-        return
-    fi
+    # addr1 — unique RA MACs excluding broadcast
+    grep -oP '(?<=RA:)([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' "$WIFI_FILE" | \
+        sort -u | grep -v "ff:ff:ff:ff:ff:ff" | while read -r mac; do
+        check_oui "$mac" "wifi_addr1"
+    done
 
-    LOG cyan "WiFi passive scan (${WIFI_PASSIVE_TIME}s on $mon_iface)..."
+    # SSID keyword check on beacons
+    grep "Beacon" "$WIFI_FILE" | while IFS= read -r line; do
+        local mac ssid
+        mac=$(echo "$line" | grep -oP '(?<=SA:)([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
+        ssid=$(echo "$line" | grep -oP '(?<=Beacon \()[^)]+' | head -1)
+        [ -n "$mac" ] && [ -n "$ssid" ] && check_ssid "$ssid" "$mac" "wifi_ssid"
+    done
 
-    tcpdump -i "$mon_iface" -n 'type mgt subtype probe-req or type mgt subtype beacon' > /tmp/ss_wifi.txt 2>/dev/null &
-    local tcp_pid=$!
-    sleep "$WIFI_PASSIVE_TIME"
-    kill "$tcp_pid" 2>/dev/null
-    wait "$tcp_pid" 2>/dev/null
-
-    if [ -s /tmp/ss_wifi.txt ]; then
-        # Extract MACs and SSIDs from probe requests and beacons
-        grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' /tmp/ss_wifi.txt | sort -u | while read -r mac; do
-            process_mac "$mac" "0" "WIFI"
-        done
-
-        # Check SSID names in beacons
-        grep -i "Beacon" /tmp/ss_wifi.txt | while IFS= read -r line; do
-            local ssid mac
-            ssid=$(echo "$line" | grep -oP '(?<=ESSID:")[^"]+' 2>/dev/null || true)
-            mac=$(echo "$line" | grep -oE 'SA:([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | cut -d: -f2-)
-            [ -n "$ssid" ] && [ -n "$mac" ] && check_ssid_names "$ssid" "$mac"
-        done
-    fi
-
-    # Also check pager recon DB for Flock-related SSIDs from current scan
-    local recon_db="/mmc/root/recon/recon.db"
-    if [ -f "$recon_db" ]; then
-        local since
-        since=$(( $(date +%s) - SCAN_INTERVAL - 5 ))
-        sqlite3 "$recon_db" \
-            "SELECT bssid, ssid FROM ssid WHERE time >= $since AND ssid != '';" \
-            2>/dev/null | while IFS='|' read -r bssid ssid; do
-            [ -n "$bssid" ] && process_mac "$bssid" "0" "WIFI"
-            [ -n "$ssid" ] && [ -n "$bssid" ] && check_ssid_names "$ssid" "$bssid"
-        done
-    fi
+    # Wildcard probe check
+    grep "Probe Request ()" "$WIFI_FILE" | while IFS= read -r line; do
+        local mac
+        mac=$(echo "$line" | grep -oP '(?<=SA:)([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
+        [ -n "$mac" ] && check_oui "$mac" "wifi_wildcard_probe"
+    done
 }
 
-# ---- STATS DISPLAY ----
+# ---- BLE PARSER ----
+# Pre-filters then processes completed BTMON_FILE
+
+parse_ble() {
+    [ ! -s "$BTMON_FILE" ] && return
+
+    local filtered="/tmp/ss_ble_filtered.txt"
+    grep -E "Address:|Name \(|Company:|0000310|0000320|0000330|0000340|0000350" \
+        "$BTMON_FILE" > "$filtered" 2>/dev/null
+    [ ! -s "$filtered" ] && return
+
+    # OUI check on all addresses
+    grep "Address:" "$filtered" | \
+        grep -oP '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | \
+        sort -u | while read -r mac; do
+        check_oui "$mac" "ble_oui"
+    done
+
+    # Name keyword check — Flock
+    grep -iE "Name \(.*\):.*flock|Name \(.*\):.*penguin|Name \(.*\):.*pigvision|Name \(.*\):.*fs ext battery" \
+        "$filtered" | while IFS= read -r line; do
+        local name
+        name=$(echo "$line" | sed 's/.*Name ([^)]*): //')
+        local key="NAME_FLOCK_${name}"
+        grep -q "^${key}$" "$SEEN_FILE" 2>/dev/null && continue
+        echo "$key" >> "$SEEN_FILE"
+        local ts gps
+        ts=$(date '+%Y-%m-%dT%H:%M:%S')
+        gps=$(get_gps)
+        echo "${ts},${gps},UNKNOWN,NAME,FLOCK_BLE,HIGH,Flock BLE name: ${name},ble_name,0" >> "$LOG_FILE"
+        LOG red "⚠ [HIGH] FLOCK BLE NAME: $name"
+        LED FINISH; ALERT "FLOCK BLE! $name"
+        RINGTONE "alert"; VIBRATE; sleep 1
+        RINGTONE "alert"; VIBRATE; sleep 1
+        RINGTONE "alert"; VIBRATE; LED SPECIAL
+    done
+
+    # Manufacturer ID 0x09C8 = 2504
+    if grep -qE "Company:.*\(2504\)|XUNTONG" "$filtered"; then
+        local key="MFR_FLOCK_2504"
+        grep -q "^${key}$" "$SEEN_FILE" 2>/dev/null || {
+            echo "$key" >> "$SEEN_FILE"
+            local ts gps
+            ts=$(date '+%Y-%m-%dT%H:%M:%S')
+            gps=$(get_gps)
+            echo "${ts},${gps},UNKNOWN,MFR,FLOCK_MANUFACTURER,HIGH,Flock mfr ID 0x09C8,ble_manufacturer,0" >> "$LOG_FILE"
+            LOG red "⚠ [HIGH] FLOCK MFR 0x09C8 DETECTED"
+            LED FINISH; ALERT "FLOCK MFR ID 0x09C8!"
+            RINGTONE "alert"; VIBRATE; sleep 1
+            RINGTONE "alert"; VIBRATE; sleep 1
+            RINGTONE "alert"; VIBRATE; LED SPECIAL
+        }
+    fi
+
+    # Raven service UUIDs
+    if grep -qE "0000310[0-9]-|0000320[0-9]-|0000330[0-9]-|0000340[0-9]-|0000350[0-9]-" "$filtered"; then
+        local key="UUID_RAVEN"
+        grep -q "^${key}$" "$SEEN_FILE" 2>/dev/null || {
+            echo "$key" >> "$SEEN_FILE"
+            local ts gps
+            ts=$(date '+%Y-%m-%dT%H:%M:%S')
+            gps=$(get_gps)
+            echo "${ts},${gps},UNKNOWN,UUID,RAVEN,HIGH,Raven/ShotSpotter service UUID,ble_uuid,0" >> "$LOG_FILE"
+            LOG red "⚠ [HIGH] RAVEN/SHOTSPOTTER DETECTED"
+            LED FINISH; ALERT "RAVEN DETECTED!"
+            RINGTONE "alert"; VIBRATE; sleep 1
+            RINGTONE "alert"; VIBRATE; sleep 1
+            RINGTONE "alert"; VIBRATE; LED SPECIAL
+        }
+    fi
+
+    rm -f "$filtered"
+}
+
+# ---- STATS ----
 
 show_stats() {
     local total
     total=$(grep -c "," "$LOG_FILE" 2>/dev/null || echo 0)
-    total=$(( total - 1 ))  # minus header
+    total=$(( total - 1 ))
     [ "$total" -lt 0 ] && total=0
     LOG ""
     LOG cyan "Detections this session: $total"
-    LOG cyan "Loot: $LOG_FILE"
     LOG ""
 }
 
-# ---- MAIN LOOP ----
+# ---- MAIN ----
+
+cleanup() {
+    kill $BTMON_PID $BT_PID $TCP_PID 2>/dev/null
+    wait $BTMON_PID $BT_PID $TCP_PID 2>/dev/null
+    rm -f "$BTMON_FILE" "$WIFI_FILE" "$SEEN_FILE"
+    LOG ""
+    show_stats
+    LOG green "StamenScan stopped."
+    LED SETUP
+    exit 0
+}
+trap cleanup INT TERM EXIT
 
 LED SPECIAL
-
-LOG green "StamenScan active — press B to stop"
+LOG green "StamenScan v2.0 active — press B to stop"
 LOG ""
 
 scan_count=0
+BTMON_PID="" BT_PID="" TCP_PID=""
+
 while true; do
     scan_count=$(( scan_count + 1 ))
     LOG cyan "── Scan #${scan_count} ──────────────────"
 
-    run_ble_scan
-    run_wifi_scan
+    # Clear temp files
+    > "$BTMON_FILE"
+    > "$WIFI_FILE"
+    TCP_PID=""
+
+    # Start btmon
+    btmon > "$BTMON_FILE" 2>/dev/null &
+    BTMON_PID=$!
+
+    # Start BLE scan
+    (echo "power on"; sleep 1; echo "scan on"; sleep "$SCAN_TIME"; echo "scan off") \
+        | bluetoothctl 2>/dev/null &
+    BT_PID=$!
+
+    # Start WiFi capture — filter at capture time for relevant frames only
+    if [ -n "$MON_IFACE" ]; then
+        tcpdump -i "$MON_IFACE" -n -e \
+            'type mgt subtype probe-req or type mgt subtype beacon or type data' \
+            2>/dev/null > "$WIFI_FILE" &
+        TCP_PID=$!
+    fi
+
+    # Wait for scan cycle
+    sleep $(( SCAN_TIME + 2 ))
+
+    # Kill scan processes
+    kill $BTMON_PID $BT_PID 2>/dev/null
+    [ -n "$TCP_PID" ] && kill $TCP_PID 2>/dev/null
+    wait $BT_PID $BTMON_PID 2>/dev/null
+    [ -n "$TCP_PID" ] && wait $TCP_PID 2>/dev/null
+
+    # Process captured data
+    [ -n "$MON_IFACE" ] && parse_wifi
+    parse_ble
 
     [ $(( scan_count % 5 )) -eq 0 ] && show_stats
 
-    sleep 3
+    sleep 2
 done
-
-LED FINISH
-show_stats
-LOG green "StamenScan complete."
