@@ -82,9 +82,22 @@ else
     LOG yellow "GPS: not available — logging 0,0"
 fi
 
-# Monitor interface check
+# Auto-setup external MediaTek MT7612U (AWUS036ACM) if present
+if ! ip link show wlan2mon >/dev/null 2>&1; then
+    if lsusb | grep -q "0e8d:7612"; then
+        LOG cyan "External MT7612U detected — bringing up wlan2mon..."
+        iw phy phy2 interface add wlan2mon type monitor 2>/dev/null
+        ip link set wlan2mon up 2>/dev/null
+        iw dev wlan2mon set channel 6 2>/dev/null
+        ip link show wlan2mon >/dev/null 2>&1 \
+            && LOG green "wlan2mon ready" \
+            || LOG yellow "wlan2mon setup failed — using internal"
+    fi
+fi
+
+# Monitor interface — prefer external if available
 MON_IFACE=""
-for iface in wlan1mon wlan0mon; do
+for iface in wlan2mon wlan1mon wlan0mon; do
     if ip link show "$iface" >/dev/null 2>&1; then
         MON_IFACE="$iface"
         break
