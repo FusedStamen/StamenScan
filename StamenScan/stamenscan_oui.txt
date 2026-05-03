@@ -1,0 +1,93 @@
+# StamenScan OUI Database v1.1
+# Surveillance infrastructure detection for wardriving
+# Format: OUI|CATEGORY|SEVERITY|Description|Detection Method
+#
+# Sources:
+#   - @NitekryDPaul — 30 Flock WiFi OUIs via promiscuous-mode research
+#   - Michael/DeFlockJoplin — 31st WiFi OUI (82:6b:f2) + wildcard probe research
+#   - colonelpanichacks/flock-you — BLE OUIs + Marauder firmware
+#   - WiGLE field data (ringmast4r CSVs) — additional WiFi + BLE OUIs
+#   - judcrandall/lookout.py — Axon BLE OUIs
+#   - Axis Communications technical docs
+#   - Verkada help docs (E0:A7:00 confirmed)
+#   - IPVM camera OUI database (Hikvision/Dahua)
+#
+# LAA (locally-administered/randomized) MACs filtered at runtime.
+
+# FLOCK SAFETY — WiFi OUIs (NitekryDPaul 30 + DeFlockJoplin 31st + WiGLE extras)
+70:C9:4E|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+3C:91:80|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+D8:F3:BC|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+80:30:49|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+B8:35:32|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+14:5A:FC|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+74:4C:A1|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+08:3A:88|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+9C:2F:9D|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+C0:35:32|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+94:08:53|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+E4:AA:EA|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+F4:6A:DD|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+F8:A2:D6|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+24:B2:B9|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+00:F4:8D|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+D0:39:57|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+E8:D0:FC|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+E0:4F:43|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+B8:1E:A4|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+70:08:94|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+58:8E:81|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+EC:1B:BD|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+3C:71:BF|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+58:00:E3|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+90:35:EA|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+5C:93:A2|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+64:6E:69|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+48:27:EA|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+A4:CF:12|FLOCK|HIGH|Flock Safety infrastructure (NitekryDPaul)|WIFI
+82:6B:F2|FLOCK|HIGH|Flock Safety infrastructure (Michael/DeFlockJoplin)|WIFI
+E0:0A:F6|FLOCK|HIGH|Flock Safety infrastructure (WiGLE verified)|WIFI
+B8:27:EB|FLOCK|HIGH|Flock Safety infrastructure (WiGLE field data)|WIFI
+C0:C9:E3|FLOCK|HIGH|Flock Safety infrastructure (WiGLE field data)|WIFI
+E4:C3:2A|FLOCK|HIGH|Flock Safety infrastructure (WiGLE field data)|WIFI
+
+# FLOCK SAFETY — BLE OUIs
+04:0D:84|FLOCK_BLE|HIGH|Flock BLE device (WiGLE verified)|BLE
+1C:34:F1|FLOCK_BLE|HIGH|Flock BLE device (WiGLE verified)|BLE
+38:5B:44|FLOCK_BLE|HIGH|Flock BLE device (WiGLE verified)|BLE
+58:8E:87|FLOCK_BLE|HIGH|Flock FS Ext Battery variant (WiGLE field data)|BLE
+90:35:86|FLOCK_BLE|HIGH|Flock BLE device variant (WiGLE field data)|BLE
+94:34:69|FLOCK_BLE|HIGH|Flock FS Ext Battery (WiGLE verified)|BLE
+B4:E3:F9|FLOCK_BLE|HIGH|Flock BLE device (WiGLE verified)|BLE
+E0:38:2E|FLOCK_BLE|HIGH|Flock BLE device (WiGLE field data)|BLE
+F0:82:C0|FLOCK_BLE|HIGH|Flock FS Ext Battery (WiGLE verified)|BLE
+
+# AXON ENTERPRISE — Body Cameras, Tasers, Signal Vehicle
+00:25:DF|AXON|HIGH|Axon Enterprise (body cam/taser/signal vehicle)|BLE
+00:58:28|AXON|HIGH|Axon Networks Inc.|BLE
+00:C0:D4|AXON|HIGH|Axon Networks (legacy devices)|BLE
+84:70:03|AXON|HIGH|Axon Enterprise (newer devices)|BLE
+
+# AXIS COMMUNICATIONS — Network Cameras
+00:40:8C|AXIS|MEDIUM|Axis Communications network camera|WIFI
+AC:CC:8E|AXIS|MEDIUM|Axis Communications network camera|WIFI
+B8:A4:4F|AXIS|MEDIUM|Axis Communications network camera|WIFI
+E8:27:25|AXIS|MEDIUM|Axis Communications network camera|WIFI
+
+# VERKADA — Cloud Security Cameras
+E0:A7:00|VERKADA|MEDIUM|Verkada cloud security camera|WIFI
+
+# HIKVISION — IP Cameras
+18:68:CB|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+28:57:BE|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+44:19:B6|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+4C:BD:8F|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+54:C4:15|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+64:DB:8B|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+94:E1:AC|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+C0:56:E3|HIKVISION|MEDIUM|Hikvision IP camera|WIFI
+
+# DAHUA — IP Cameras
+3C:EF:8C|DAHUA|MEDIUM|Dahua IP camera|WIFI
+90:02:A9|DAHUA|MEDIUM|Dahua IP camera|WIFI
+BC:32:5F|DAHUA|MEDIUM|Dahua IP camera|WIFI
