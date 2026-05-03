@@ -107,7 +107,8 @@ OUI|CATEGORY|SEVERITY|Description|Detection Method
 
 - **@NitekryDPaul** — 30 Flock WiFi OUIs + addr1 receiver-side detection technique
 - **Michael / DeFlockJoplin** — 31st OUI (`82:6B:F2`) + wildcard probe signature (11/12 cameras field tested in Joplin)
-- **colonelpanichacks** ([flock-you](https://github.com/colonelpanichacks/flock-you)) — Flock BLE OUI research + Marauder firmware OUI list
+- **colonelpanichacks** ([flock-you](https://github.com/colonelpanichacks/flock-you)) — Flock BLE OUI research
+- **JustCallMeKoko** ([ESP32Marauder](https://github.com/justcallmekoko/ESP32Marauder/tree/master)) - Marauder OUI Research
 - **Will Greenberg** ([flock-you fork](https://github.com/wgreenberg/flock-you)) — BLE manufacturer ID `0x09C8` (XUNTONG) detection
 - **GainSec** — Raven/ShotSpotter BLE service UUID dataset (`raven_configurations.json`)
 - **judcrandall** ([lookout.py](https://github.com/judcrandall/lookout.py)) — Axon BLE OUI detection
