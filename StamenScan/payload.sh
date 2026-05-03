@@ -26,14 +26,17 @@
 #   FINISH   - Detection (with ALERT+RINGTONE for HIGH severity)
 #   FAIL     - Error
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+[ -z "$SCRIPT_DIR" ] && SCRIPT_DIR="$(dirname "$(readlink -f "$0")" 2>/dev/null)"
+[ -z "$SCRIPT_DIR" ] && SCRIPT_DIR="/root/payloads/user/reconnaissance/StamenScan"
 OUI_FILE="$SCRIPT_DIR/stamenscan_oui.txt"
+[ ! -f "$OUI_FILE" ] && OUI_FILE="/root/payloads/user/reconnaissance/StamenScan/stamenscan_oui.txt"
 LOOT_DIR="/root/loot/stamenscan"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${LOOT_DIR}/stamenscan_${TIMESTAMP}.csv"
 SEEN_FILE="/tmp/stamenscan_seen.txt"
 SCAN_INTERVAL=15
-BLE_SCAN_TIME=12
+BLE_SCAN_TIME=10
 WIFI_PASSIVE_TIME=10
 
 # ---- INIT ----
@@ -107,9 +110,15 @@ fire_alert() {
     case "$severity" in
         HIGH)
             LED FINISH
+            ALERT "${category} DETECTED! ${mac}"
             RINGTONE "alert"
             VIBRATE
-            ALERT "${category} DETECTED! ${mac}"
+            sleep 1
+            RINGTONE "alert"
+            VIBRATE
+            sleep 1
+            RINGTONE "alert"
+            VIBRATE
             ;;
         MEDIUM)
             LED SPECIAL
@@ -228,25 +237,20 @@ check_ssid_names() {
 run_ble_scan() {
     LOG cyan "BLE scan (${BLE_SCAN_TIME}s)..."
 
-    hciconfig hci0 down 2>/dev/null
-    hciconfig hci0 reset 2>/dev/null
-    hciconfig hci0 up 2>/dev/null
-    sleep 1
+    (echo "power on"; sleep 1; echo "scan on"; sleep "$BLE_SCAN_TIME"; echo "scan off") \
+        | bluetoothctl 2>/dev/null | grep "^\[NEW\] Device" \
+        | awk '{print $3}' > /tmp/ss_ble_macs.txt
 
-    timeout "${BLE_SCAN_TIME}" hcitool lescan --duplicates 2>/dev/null > /tmp/ss_ble.txt &
-    local bt_pid=$!
-    sleep "$BLE_SCAN_TIME"
-    kill "$bt_pid" 2>/dev/null
-    wait "$bt_pid" 2>/dev/null
+    bluetoothctl devices 2>/dev/null | awk '{print $2}' >> /tmp/ss_ble_macs.txt
 
-    if [ -s /tmp/ss_ble.txt ]; then
-        while IFS= read -r line; do
-            local mac
-            mac=$(echo "$line" | awk '{print $1}' | grep -E '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$')
-            [ -z "$mac" ] && continue
+    if [ -s /tmp/ss_ble_macs.txt ]; then
+        sort -u /tmp/ss_ble_macs.txt | while IFS= read -r mac; do
+            echo "$mac" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || continue
             process_mac "$mac" "0" "BLE"
-        done < /tmp/ss_ble.txt
+        done
     fi
+
+    rm -f /tmp/ss_ble_macs.txt
 }
 
 # ---- WIFI PASSIVE SCAN ----
@@ -263,14 +267,13 @@ run_wifi_scan() {
     done
 
     if [ -z "$mon_iface" ]; then
+        LOG yellow "No monitor interface — skipping WiFi scan"
         return
     fi
 
     LOG cyan "WiFi passive scan (${WIFI_PASSIVE_TIME}s on $mon_iface)..."
 
-    timeout "$WIFI_PASSIVE_TIME" tcpdump -i "$mon_iface" -n \
-        'type mgt subtype probe-req or type mgt subtype beacon' \
-        2>/dev/null > /tmp/ss_wifi.txt &
+    tcpdump -i "$mon_iface" -n 'type mgt subtype probe-req or type mgt subtype beacon' > /tmp/ss_wifi.txt 2>/dev/null &
     local tcp_pid=$!
     sleep "$WIFI_PASSIVE_TIME"
     kill "$tcp_pid" 2>/dev/null
