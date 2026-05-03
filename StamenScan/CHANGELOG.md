@@ -12,6 +12,10 @@
 - RAVEN category — SoundThinking/ShotSpotter acoustic surveillance nodes
 - btmon-based BLE capture replacing bluetoothctl-only approach — exposes full advertisement data
 - Cleanup trap — kills all background processes cleanly on exit
+- Auto-setup for external MediaTek MT7612U adapter (AWUS036ACM) — 
+  detects and brings up wlan2mon automatically without needing 
+  external-mediatek-radio-loader first
+- wlan2mon added to monitor interface priority list (preferred over internal)
 
 ### Changed
 - tcpdump now captures all management + data frames (was probe-req/beacon only)
