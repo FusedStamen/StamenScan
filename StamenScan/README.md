@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/27324209/README.md)
 # StamenScan
 
 **Passive Surveillance Infrastructure Detection for the WiFi Pineapple Pager**
